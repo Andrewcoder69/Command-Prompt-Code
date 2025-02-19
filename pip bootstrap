@@ -1,0 +1,228 @@
+#!/usr/bin/env python
+#
+# Hi There!
+#
+# You may be wondering what this giant blob of binary data here is, you might
+# even be worried that we're up to something nefarious (good for you for being
+# paranoid!). This is a base85 encoding of a zip file, this zip file contains
+# an entire copy of pip (version 25.0.1).
+#
+# Pip is a thing that installs packages, pip itself is a package that someone
+# might want to install, especially if they're looking to run this get-pip.py
+# script. Pip has a lot of code to deal with the security of installing
+# packages, various edge cases on various platforms, and other such sort of
+# "tribal knowledge" that has been encoded in its code base. Because of this
+# we basically include an entire copy of pip inside this blob. We do this
+# because the alternatives are attempt to implement a "minipip" that probably
+# doesn't do things correctly and has weird edge cases, or compress pip itself
+# down into a single file.
+#
+# If you're wondering how this is created, it is generated using
+# `scripts/generate.py` in https://github.com/pypa/get-pip.
+
+import sys
+
+this_python = sys.version_info[:2]
+min_version = (3, 8)
+if this_python < min_version:
+    message_parts = [
+        "This script does not work on Python {}.{}.".format(*this_python),
+        "The minimum supported Python version is {}.{}.".format(*min_version),
+        "Please use https://bootstrap.pypa.io/pip/{}.{}/get-pip.py instead.".format(*this_python),
+    ]
+    print("ERROR: " + " ".join(message_parts))
+    sys.exit(1)
+
+
+import os.path
+import pkgutil
+import shutil
+import tempfile
+import argparse
+import importlib
+from base64 import b85decode
+
+
+def include_setuptools(args):
+    """
+    Install setuptools only if absent, not excluded and when using Python <3.12.
+    """
+    cli = not args.no_setuptools
+    env = not os.environ.get("PIP_NO_SETUPTOOLS")
+    absent = not importlib.util.find_spec("setuptools")
+    python_lt_3_12 = this_python < (3, 12)
+    return cli and env and absent and python_lt_3_12
+
+
+def include_wheel(args):
+    """
+    Install wheel only if absent, not excluded and when using Python <3.12.
+    """
+    cli = not args.no_wheel
+    env = not os.environ.get("PIP_NO_WHEEL")
+    absent = not importlib.util.find_spec("wheel")
+    python_lt_3_12 = this_python < (3, 12)
+    return cli and env and absent and python_lt_3_12
+
+
+def determine_pip_install_arguments():
+    pre_parser = argparse.ArgumentParser()
+    pre_parser.add_argument("--no-setuptools", action="store_true")
+    pre_parser.add_argument("--no-wheel", action="store_true")
+    pre, args = pre_parser.parse_known_args()
+
+    args.append("pip")
+
+    if include_setuptools(pre):
+        args.append("setuptools")
+
+    if include_wheel(pre):
+        args.append("wheel")
+
+    return ["install", "--upgrade", "--force-reinstall"] + args
+
+
+def monkeypatch_for_cert(tmpdir):
+    """Patches `pip install` to provide default certificate with the lowest priority.
+
+    This ensures that the bundled certificates are used unless the user specifies a
+    custom cert via any of pip's option passing mechanisms (config, env-var, CLI).
+
+    A monkeypatch is the easiest way to achieve this, without messing too much with
+    the rest of pip's internals.
+    """
+    from pip._internal.commands.install import InstallCommand
+
+    # We want to be using the internal certificates.
+    cert_path = os.path.join(tmpdir, "cacert.pem")
+    with open(cert_path, "wb") as cert:
+        cert.write(pkgutil.get_data("pip._vendor.certifi", "cacert.pem"))
+
+    install_parse_args = InstallCommand.parse_args
+
+    def cert_parse_args(self, args):
+        if not self.parser.get_default_values().cert:
+            # There are no user provided cert -- force use of bundled cert
+            self.parser.defaults["cert"] = cert_path  # calculated above
+        return install_parse_args(self, args)
+
+    InstallCommand.parse_args = cert_parse_args
+
+
+def bootstrap(tmpdir):
+    monkeypatch_for_cert(tmpdir)
+
+    # Execute the included pip and use it to install the latest pip and
+    # any user-requested packages from PyPI.
+    from pip._internal.cli.main import main as pip_entry_point
+    args = determine_pip_install_arguments()
+    sys.exit(pip_entry_point(args))
+
+
+def main():
+    tmpdir = None
+    try:
+        # Create a temporary working directory
+        tmpdir = tempfile.mkdtemp()
+
+        # Unpack the zipfile into the temporary directory
+        pip_zip = os.path.join(tmpdir, "pip.zip")
+        with open(pip_zip, "wb") as fp:
+            fp.write(b85decode(DATA.replace(b"\n", b"")))
+
+        # Add the zipfile to sys.path so that we can import it
+        sys.path.insert(0, pip_zip)
+
+        # Run the bootstrap
+        bootstrap(tmpdir=tmpdir)
+    finally:
+        # Clean up our temporary working directory
+        if tmpdir:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+DATA = b"""
+P)h>@6aWAK2mtSfNm@P%ijnvL003nH000jF003}la4%n9X>MtBUtcb8c|B0UO2j}6z0X&KUUXrdswk@
+k1uudi>cQKxl-V|I1MSR^q%Qq?r(L=s5b}6=dAx?h06InTEzl4HD}0jZ7QUlW@UAzeEdP)tEoBKWklj
+DpTYHxoV`^+*aOAHYw^Cd#_OrlVln;l*{|X*AaPtb}wJ?w>%d+2&1X4Rc!^r6h-hMtH_<n)`omXfA!z
+c*H2_nTSfpGFr1uvmTkcug)ShEPeC#tJ!I=_b+)ln~75Jc!yqZE1Gl6K?KR$<8F6kVP)a}pU*^4-Jpl
+U<!HvzbFl3|p@5?5Ii7qF0_`NT{r7l_z#FBA=}=>d5{AF3D`nKTt~p1QY-O00;o@hDlm)_pjHy0RRA2
+0{{RI0001RX>c!JUu|J&ZeL$6aCu!)OK;mS48HqU5b43r;JP^vOMxACEp{6QLy+m1h%E`C9MAjpBNe-
+8r;{H19{ebpf{zJ27j)n8%0=-6Z#elILRo@w9oRWWbO{z8ujDS!QAC@3T%nJCf;1rX6ghzu#Z}<GSE4
+4EG}J&ngovyJ$%DCh>R@K&*?Hgj1WFD91+adaM4G`4Xs@*hA^t@nbDYdL)-aOjsW~3}QVVby(8=@7U$
+Fzj5Y{w!2hUUH`?e9j7WDA;>-1aos>7j{2$~BfyL8p@__Y98dsP#Bs7^<X<wp+-f{6%mc1~N!0T>lWF
+=e_gr;(4^?am?Cp93+7b-!?~nb}-$cPSR1zckA*zNp!)$;YjlZrfn&RWNM}=QA7*cb8A{(9@{5!vBfq
+rEMoeu5FvJZngI@N#4#(2v$WnMGCAVD?b9t8W^qDfcFBe5ZZF%dPAPaq#<aBs;+HiVj+9PK#6heH_-Q
+-kVzlI0rncJH8Q{ZFBFwrpI^^9n>>ikclG~yPvCg`JUGb_W2#PdCXxx}7!|T*xc9qdnTILbO-nAJaF2
+~0snMF<S>DU<%E01X4*yW9@|}F2;vY~;0|XQR000O8?}kZQNptbL)dBzjss#W56#xJLaA|NaUte%(a4
+m9mZf<3AUtcb8d3{vDPTN2bz56Q$bEqvD7eNnI)KryFP`Qva35SZJ)y5u^rS`7bUDH^IfA5SPClJy4k
+gRuS-n@D9)?pY<HkdUY0XH)9Wea|-9Au_$!4y!dI)Oim_B2SyRZ*Zt?E&?ZvPM_5PJ>{{DTOK#=wHhU
+bC3>{r`H6$p=j4wBxLD(_{!uBMQ2if@UWt^sy5bB+LMxj)Z2G(UV7|ngkcy2$MEs!7j)I0&^l!_5v^+
+J)k>Ahw~(zd`wb2=&u3NRI`moV*YtX}3obEbq#zjTw2r|qOs$ARVNC^fTU+x$K&dxX8O(kzzfZ5leDd
+SwYCc)O7^3q8KF2{2<X8-Bg!4AquHzBFG5EH|5vY4@ECxW2Mc-HrVH&0nM(L=_h@mhRo`6IivI$rfOe
+`I+l`hQf=<E)@zyX_4k1Ul#ShS8Ln{1Six?O(4H;VOBh1?*`%24x7-HA~5Dm}kIWbv_4md?M9pI>64O
+7trE3Xz}JJ-^2@PTqtZaE^Ca{VL`GT(a_Oau^s*w(AT6joVG|914`AACj$B4SNYmBJJg-pS8tGDosG|
+O?)?P+h{U34M&?tIfBWj)3czPd4FE2Ra(i69FMjgoH&zyeW`Sg_Ps>oQmV2Zf^%j05*$PZv#Xg{OmF5
+FlZBX1r%N)?HZmIih2UExM9lNgO6eTTRDIRK&XJ<n+4{a`(vSUH7gixPoOc`S$ASWct1*ilmPG<ZQ<h
+vH0p>ZrHky`R+I#ff%RkJ@54mv2hNCfr<ehNz#t2(WGfuEO;NsNaUbl45Y0u{NP?NiX*4`h~9r7Ke%m
+kvtgne)Oj4dI~AQ{=4B##u_da5*|MW@MsgpFAKZCN20TL>6a??SM@ga{J|FQn$%LuR5F66J(e<QO4RG
+8cXQB+Xu*aQyab7Y3d2Qu-DBPSlB+Fh*Bp{JMZFJ)sf#@zOTb++R>j0|XQR000O8?}kZQ&BwqszyJUM
+9svLV3;+NCaA|NaaCt6td2nT9C62L9#V`y-_kP9QSf2V13=C{<Kw>tnX)PsolsJX_Jx&=d9p7_`6i5S
+Mvz$qHBvD4Gc2vqMK2J#u@ySRoi8HJ74pBUZpQaDYr)B{xbde<biidBj6SwLQ4C~0fIn*4z#kiE0Sc{
+#il<@j|pBMZL#}ADaAESsKi)hSbaxtCyXu4z%H~r`8#VV{D!!(UMBd94M9GxnKfLFZz7T$d6N~+ca-?
+5#f2RFEdlxM*G?W6ErQaLd-ZtL;~P)h>@6aWAK2mtSfNm^4WVBa?Z00033000>P003}la4%nJZggdGZ
+eeUMUtei%X>?y-E^v8uQL#?LKn&gQE3C4#Qn@ThKqVNNDp=U63SAQ?v2?jR*$!3y9w((B25z~hr>E!V
+=a%yTIu%MC&`>ff>`8PBZ$&Am5S?phNulCDC@HdWepHHb)qlj?Id=n;NN3!c*LnlPC<-TpI>d;Lp*Ax
+@NYlcAX86|n4s~x3dA%{4b5C^-eJBN!K+x-$+`^E}a>&gXQM{XH`M*P*a}Am<P+AA>WcRbiVczN>%Eu
+!-!D~*qf!k-xtUCwxR;$%}PqvdlVHD&~%WR1u#|G-0Bu50PnTiT%Z?T3jfmjc5UXrmz##CF1#g5dw1-
+zI=Xd1etfCe>Kbz2Zb=v9mCs;VRH$CIz~P?f2K%DS#dWJIa%?;aogHQ@69cMXq8c`Di1-^-kNu8}WM7
+<J_ILoNkv+!s(w0|XQR000O8?}kZQ-v+$#whRCO%qai>8UO$QaA|NaUukZ1WpZv|Y%gMUX>4R)Wo~vZ
+aCy}lU6b3k@m;?Hp&vrFB;(|%qp{k?_Bpw!Yv0)Cw3!<XLy^#lJ&I%iQg_PD{rB!J01_Z6+3EBpdN_&
+T?qa`pu{h83UUo&9vy19bh`QSIs%4$zIosBP6|yeVwx}zXccQ3nnam5>vJGOu<HGa2#iH0ZwP;yc-`?
+VyeypYW)uipNEH>s*7A^08AA6{lKeYEEZ5CTm?^#xtCC_kY$uz)wk#oWG*G1MUnD*H4{_V9$Grmc)yK
+7kO-y_Qg;ODE0<kgQCul{lQ?uU?Fwp^r}l85XqNEEX74Q`f}A^XVT@w#j99TE%KrwU#z6w#(=;^e@qy
+cTf-+odRTeBeT&mh@gfsmB4uyhxI5QSu~Vsl?@^tTR%tMZ2hgGhign$|9B^K?TGNe%<gY(Tj69hF*_w
+%iE*@6N3Ij_0S34Kgevy_k51fp0{b9wy8}g=i9U^+k_9EqR3babF{j)C}phOqgT<zhnMd^UYv&Sm20y
+g_^(|d`1ze=w`oM3aoKAjOUp7DmQSO$eBUH_A$q5Q=hv`d*4E+}GJFkhle?nIB{=@p^{VB9!Dogzfb$
+0}5eFB5$9{_|wfcq@7YkGqyj+=Zib3qRwB{#CmF~fLg2iG1wqRh8yleb)$z&@+wxREUMSoQedqX~a18
+ZyT&o=~z3v0!y;B6-==BI!iFc2qYU#-}N@ltYJ#htP;1w|%Tf^Ullg+`l$bVZvazU1XLq!=Iee^*yrf
+#L@tVgvxG@XLK6frkd(yh&lx;T3r%EDvt#dmijVY^;z>;L_O?6<KbjabuZ@qG_cI1+I@!62P?jG;|*q
+=2-=e(KR_=S5=rY5-_e$a)P`{Ovr;j@D|jE;mz6_<OHR`cgn7g?G7>nf8bfys*D5cK#R3I&azGjaOUz
+DA$9b2^qd6|z1|hz!BS;ojgwL~8C*G3X}XdvxHzI)5dz2+py4)@u!*P@tFd97zGdBsjB68t<na}J`*x
+BFV!@#v9Jn8VIgxF}C-_ZOx0*m)NK~*N4EBGfB)P9UC^NgXfgFZ7vfgv>6D6URTm=t^Q{)_E{S8+@qc
+OWgb)~IEGfO3?@*Y%}R;VI+&vFXZ@)-A!+Q-3EzTz-g*uG!Ocq?<B)j8Mi**DBf(8gpEE|Mf}j$R*h<
+d8=RsUX2hrh{54hk)8a0q1yyf~LC147lRqlkC83M<q4B$7r{yh6J|hTDAp1EN={a=@%=J`@uI>j`xFK
+P_<o^9@3&jZzBRe5RO5upi;1Y3!8!)uuSl@1=rdft<@LbJ=Y5QKnjvzTd_~e;x~YVSY`DVbqV&8uK&Q
+cyHutv>KP;mnKzQfvs}VbAco?c=)Q_?OhvXUS^U3X-#uqFl-_$mbcjlGWcLL`Tt@}NCTJ0{m1*hH)?{
+pfw>l8-s`|ddNZc0~-8)o5NY;@%bnfcw7L`nK4c=+*c)x?*Wy}%y45*B4I0OWQEQpdbzjyvY(%_WdZX
+8Dlnd1p-+sz+qNhvr+Ya(+#rBKQql$wEWoA^_o`Kdd!n#10;Uy=JrmR332rxgkWzjez9l31Arb*6KaN
+<~mY8cEILY(1GNB7J3ExkcH>TD)=!bNuqt<=fZE#k-$CBW1n85K9z?`RZD9CIj?EAyHL@RBCmZeh)=4
+gvB>Bh0r(p{7+p}zG04*LWYn*5IE?lXk14{`<{v^sAnGfZ<%6#F_07PbY+uEYE>z}pzYTqFjLx2f|0F
+>dt^dzY+8BlmjLa%dWa8c*`a?1R?JQriYb@pzCtq<IGDjOyv5MuTNq~968RZ>)ycNrL%vZNv#ss$kHD
+=YI6R9Ra9XSl;B@c^CAJ2$IgkyC2+o&g)C+<S&Sv5hv2{ApkL`nRwQHX93J>8dJL|G(Q1}DbLHaJqk@
+^94e}~m|1l0p!>Z3z~KgJu_a&a|ZnNd2`I#|31=j0WXMM!chuWPr_U%bIZ@%*xFT;{e-Oo`at8b9V}7
+emJd2AKlj$J7z~(;p>6rfLeF7bj59*c<R6IE&<>ZnPOAWk$%1l#5V$8BZ{4Q9zHKmT2chcc}1_ly$RQ
+PvEHl5Fk}8-ul4=#?GjZwoiQ}o|dzcQ{77Q9KX@H%3Z9zR@U$7hI$X1tJ!VlE5I!1s46IZKqc}g3JYe
+mG^IJG=bPD`>7~8>1a%e-V(CPI!w?&48!2f*VJd<V8bf-*z>EWaga)$8Lk3o4kkoV=3aEU>>z=6`hAn
+TO#VCpCo}TAZ9LK9n+C1q|P`5e64az<?;}?72)QWQv8pK;HWl%sYPhZ&&Av5f*+*;sn5ZJ8%$Ak0fUO
+;EC^uTfS05*DbNMV^>qCe;k1UpMzy^+qjx_tHh^^aJUuYSJ%@%_7Z?>~LK`0(-a`eIlkh=Ih@;0-2!I
+3?1~B6XQ34v>-HM(sO5qC0C~*TA|`Pz^N@v24nsH4Ta6O<+~1hEAU*<lNN19>6SRbxod*llbG*7l`8}
+8+KL2g*+#m0Us-L$-Hm9lYpnF_tK2^cp7(4+K(QnrF0x;K;#cuf-}TrKm5DFdEd=T$Q~CD8K=ed+C_l
+Q$bxr4N2E74VS7BO0cSiLz44F=<*aC6YQ!jh9gm5@gnQ|a+5_!28b^+3&)B-D8^7Of8XNA}Yl?rPak0
+<rHy-q#?Ra))kL={g5;&}YcGZkxsbw8BqefPEq8<;g!v37S9@vBIq)x2tJFJ0ncoQ*5&f5|?`tg8dX-
+>4hKAmvL;rA(IpFAMuSc_XrixeLHPLe?so1y-<!5TLWHe=&=g`(#gK;^q>fgg=w{d1{S6Yo#!WD2hb_
+NLG@4?Hmf_Q!eLenNi+Ari2aI&+NW!4ItJL7$~mU!zT#dB*<5zlLhbA0Y2#MOz*jN6$-1i_`(bF%)|5
+7G6BG0#4HCm)Js9nLP?~iCQA5BL!7YQ6Jzmo&&`r+w*LfR)yTtQG(<B1d|QVifxgpoo0%?vSPeX#U0L
+kC6UEYqjNJp46kD?2lpR6qK8@1dkW@@JopYs-0{gvx}sU3Krz{@z<JH4!%T!)jp=wg$0%}x(DVCgAI3
+i6v~kWd23r)8A`J}T<4)${Bs5nhCuHrzGcn$@Vq5RgNb|H>J=)}+rj5#cF8eatpCzt!hbY=1z?i6p6o
+`)mg;Ob<N;uAk)G*?tbxmd<jr$WeLlarST#UTA{P#aEmh4qc<0PRwQugV?+rN!Rqt;fTvGS0`^}grw_
+)xy+5(Avpxzw=Ayqh(h#6JM3;XsngL=76%{YL-#Ps2|f_gHUd3aXxWtVV;LoADk)?`8MSYDz&j6eEiL
+wFR1Re57}zbZnzEK5AsoYZyP%+XuJ(QF;$YTMg9QH%bC`jizY$XIR#q)Zc-*w#fDzTCaTQt<E!z*9L~
++k@^0gKC(39xc|{RQgJ&Tm$}2MBTlUPiyK#qmWb{fPwQsX-g;3~+~Slf>O*-7QPoi=9d+mzN?>o!l4`
+y*L+Kvcvq)WoMdlJ`N*U4<$`Ij=ht5(FwQeI&yvE@spiG*}S$ki@39rIA+@?O@?bfc7Bg7UI4IPrc*{
+`<6tvd8VcYqBIw2^v(&Nk4v-nyea&8DI;X5V^tj!)_u73<%{c8mW=aNuwGftP;3UJQ4uuP<JH`oWD*b
+O|%p^rFMT>V|mvS;G2O`z%R|BDP2B{G4F55OrzB!+3y9#gQh&Re3azqhg_OrRtujnN!gfyF|m$Cc%_F
+eWsigk`uGKDDv2!M^t0Mn-WerzLy}|kvDS=B;?T3gUDJyqwO0ZKo^hRvcdp`o@WMmc3^-Xx?WE@QKBZ
+a28K1;Er!(@6KNgXcu@fY44^m9*XwCpOAT5=P-rv@{M+SvTGK~6M1&p@Rs>i$Z5;@%ZKoUeEv`FZoD<
+H-tso@tkT2s9@Ri`&dBG!uiwMpOiN@O2^VX1qzWCvIo)Uoo5gTLe^0=#IYw_5MPJ%-uxcnJ5HE4vOum
+^svgBd>6SUbs}qMs*-5CgLo+C15^fa>%mWC?IgeZZcj4yB>KPq4UJz2aFP061@s5+-Xdbn^Hd1%Ql9n
